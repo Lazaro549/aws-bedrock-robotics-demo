@@ -1,0 +1,52 @@
+"""Pipeline metrics collection."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List
+
+
+@dataclass
+class PipelineMetrics:
+    timestamp: str
+    mode: str
+    vision_latency_s: float
+    reasoning_latency_s: float
+    robot_latency_s: float
+    total_latency_s: float
+    command: str
+    confidence: float
+    success: bool
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model_id: str = ""
+    notes: str = ""
+
+
+class MetricsCollector:
+    def __init__(self, log_path: str | Path | None = None):
+        self.runs: List[PipelineMetrics] = []
+        self.log_path = Path(log_path) if log_path else None
+
+    def record(self, metrics: PipelineMetrics) -> None:
+        self.runs.append(metrics)
+        if self.log_path:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(asdict(metrics)) + "\n")
+
+    def summary(self) -> dict:
+        if not self.runs:
+            return {}
+        n = len(self.runs)
+        return {
+            "runs": n,
+            "success_rate": sum(1 for r in self.runs if r.success) / n,
+            "avg_total_latency_s": sum(r.total_latency_s for r in self.runs) / n,
+            "avg_reasoning_latency_s": sum(r.reasoning_latency_s for r in self.runs) / n,
+            "total_input_tokens": sum(r.input_tokens for r in self.runs),
+            "total_output_tokens": sum(r.output_tokens for r in self.runs),
+        }
