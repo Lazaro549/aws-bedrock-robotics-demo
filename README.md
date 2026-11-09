@@ -18,53 +18,54 @@ End-to-end pipeline that connects computer vision, Amazon Bedrock (Claude), and 
 3. **Action** — Generates a robot command (move, pick, stop, inspect…).
 4. **Measure** — Logs latency, token usage, decision confidence and execution outcome.
 
-The whole loop is designed to be **measurable** and easy to extend to real hardware or a real CV model.
-
 ```
-[ Camera / Simulator ]
-         ↓
-   Vision Adapter  →  Scene Context (JSON)
-         ↓
-   Bedrock Claude  →  Robot Command + Reasoning Trace
-         ↓
-   Robot Simulator →  Execution Result + Metrics
+[ Camera / Dashboard / Simulator ]
+              ↓
+        Vision Adapter  →  Scene Context (JSON)
+              ↓
+        Bedrock Claude  →  Robot Command + Reasoning Trace
+              ↓
+        Robot Simulator →  Execution Result + Metrics
 ```
 
 ---
 
-## Quick start
+## Two ways to run
 
-### 1. Clone & install
+### A) Local CLI (simulated vision)
 
 ```bash
 git clone https://github.com/Lazaro549/aws-bedrock-robotics-demo.git
 cd aws-bedrock-robotics-demo
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-### 2. Configure credentials
-
-```bash
-cp .env.example .env
-# Edit .env with your AWS credentials / region / model ID
-```
-
-You need:
-- AWS credentials with `bedrock:InvokeModel` permission
-- Access to a Claude model on Bedrock (e.g. `anthropic.claude-3-5-sonnet-20241022-v2:0` or newer)
-
-### 3. Run the pipeline (local simulation)
-
-```bash
-# Fully simulated (no AWS call) — useful for testing the loop
 python -m src.pipeline --mode mock
-
-# Real Bedrock call + simulated robot
 python -m src.pipeline --mode bedrock
+```
 
-# Continuous loop (every N seconds)
+### B) Live bridge with robot-vision-dashboard (real COCO-SSD)
+
+```bash
+# Terminal 1 — bridge
+python -m src.bridge_server --mode mock --port 8787
+# or: python -m src.bridge_server --mode bedrock --port 8787
+
+# Terminal 2 — dashboard
+cd ../robot-vision-dashboard
+python -m http.server 8000
+# open http://127.0.0.1:8000 → enable AI Bridge → Start camera
+```
+
+Full integration guide: [docs/integration-dashboard.md](docs/integration-dashboard.md)
+
+---
+
+## Quick start (CLI)
+
+```bash
+cp .env.example .env   # only needed for --mode bedrock
+python -m src.pipeline --mode mock
 python -m src.pipeline --mode bedrock --loop --interval 5
 ```
 
@@ -72,9 +73,9 @@ Example output:
 
 ```
 [VISION] Detected: person (0.92), cup (0.87), table (0.95)
-[REASON] Claude decided: approach_and_inspect(target="cup")
+[REASON] Claude decided: APPROACH(target_label="cup")
          Confidence: 0.81 | Tokens: 312 in / 148 out | Latency: 1.42s
-[ROBOT]  Executing: MOVE_TO (x=0.45, y=0.30) → PICK
+[ROBOT]  Executing: Approaching target 'cup'.
 [METRIC] Pipeline total: 1.67s | Success: true
 ```
 
@@ -85,24 +86,18 @@ Example output:
 ```
 aws-bedrock-robotics-demo/
 ├── src/
-│   ├── vision/
-│   │   ├── adapter.py          # Interface for real or simulated detections
-│   │   └── simulator.py        # Generates realistic scene contexts
-│   ├── reasoning/
-│   │   ├── bedrock_client.py   # Amazon Bedrock (Claude) client
-│   │   └── prompts.py          # System + user prompt templates
-│   ├── robot/
-│   │   ├── commands.py         # Command schema & validation
-│   │   └── simulator.py        # Executes commands and returns outcomes
-│   ├── metrics/
-│   │   └── collector.py        # Latency, tokens, success rate
-│   └── pipeline.py             # Orchestrator
-├── tests/
+│   ├── vision/           # SceneContext + simulated vision
+│   ├── reasoning/        # Mock + Bedrock Claude clients
+│   ├── robot/            # Command schema + simulator
+│   ├── metrics/          # Latency / tokens / success
+│   ├── pipeline.py       # CLI orchestrator
+│   └── bridge_server.py  # FastAPI bridge for the dashboard
 ├── docs/
-│   └── architecture.md
+│   ├── architecture.md
+│   └── integration-dashboard.md
+├── tests/
 ├── .env.example
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
 
 ---
@@ -112,40 +107,16 @@ aws-bedrock-robotics-demo/
 | Principle | Implementation |
 |-----------|----------------|
 | **Measurable** | Every run emits structured metrics (latency, tokens, confidence, success) |
-| **Swappable** | Vision and robot layers are adapters — replace with real camera / ROS 2 / hardware |
-| **Safe by default** | Mock mode works without AWS credentials; commands are validated before execution |
-| **Observable** | Full reasoning trace is kept so you can inspect *why* the model chose an action |
-
----
-
-## Extending the demo
-
-### Connect a real vision model
-Replace `src/vision/simulator.py` with a call to your existing `robot-vision-dashboard` detections or a YOLO / COCO-SSD endpoint.
-
-### Connect real hardware or ROS 2
-Implement a new adapter in `src/robot/` that publishes commands to a ROS topic or serial interface.
-
-### Deploy on AWS
-A minimal serverless sketch (API Gateway + Lambda + Bedrock) can be added under `infra/`. The current local pipeline already mirrors the same data flow.
-
----
-
-## Metrics you can track
-
-- End-to-end pipeline latency
-- Bedrock input / output tokens and cost estimate
-- Decision confidence (from the model response)
-- Command success rate
-- Scene complexity vs. decision time
-
-These numbers are printed after every run and can be exported to JSON/CSV for later analysis.
+| **Swappable** | Vision and robot layers are adapters |
+| **Safe by default** | Mock mode works without AWS credentials |
+| **Observable** | Full reasoning trace kept for every decision |
+| **Integrable** | Same models used by CLI and HTTP bridge |
 
 ---
 
 ## Related projects
 
-- [robot-vision-dashboard](https://github.com/Lazaro549/robot-vision-dashboard) — Real-time browser computer vision
+- [robot-vision-dashboard](https://github.com/Lazaro549/robot-vision-dashboard) — Real-time browser computer vision (COCO-SSD)
 - [ai-evaluation-platform](https://github.com/Lazaro549/ai-evaluation-platform) — LLM evaluation harness
 - [mcp-advanced-starter](https://github.com/Lazaro549/mcp-advanced-starter) — Advanced MCP server patterns
 - [AWS-AI-Generative](https://github.com/Lazaro549/AWS-AI-Generative) — Generative AI patterns on AWS
@@ -155,8 +126,6 @@ These numbers are printed after every run and can be exported to JSON/CSV for la
 ## License
 
 MIT © Lázaro Gómez Vitolo
-
----
 
 **Built with a bias toward practical, measurable systems.**  
 Mar del Plata, Argentina · [Portfolio](https://lazaro549.github.io/Portfolio/)
