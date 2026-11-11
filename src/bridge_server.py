@@ -2,6 +2,7 @@
 Vision bridge for robot-vision-dashboard.
 
 Flow: scene → reasoner → safety policy → robot → metrics
+Optionally records incoming scenes to JSONL for offline replay.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from src.robot.commands import RobotCommand
 from src.robot.policy import apply_safety_policy
 from src.robot.simulator import RobotSimulator
 from src.vision.adapter import Detection, SceneContext
+from src.vision.file_adapter import append_scene
 
 load_dotenv()
 console = Console()
@@ -38,6 +40,7 @@ _last_scene: SceneContext | None = None
 _last_decision: RobotDecision | None = None
 _last_result: dict[str, Any] | None = None
 _mode = "mock"
+_record_path: str | None = os.getenv("BRIDGE_RECORD_SCENES", "logs/scenes.jsonl")
 
 
 def _init_reasoner() -> None:
@@ -65,7 +68,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="aws-bedrock-robotics-demo bridge",
     description="Vision scenes → reasoning → safety policy → robot decision.",
-    version="1.3.0",
+    version="1.4.0",
     lifespan=lifespan,
 )
 
@@ -161,6 +164,7 @@ def health() -> dict:
         "has_last_scene": _last_scene is not None,
         "has_last_decision": _last_decision is not None,
         "runs": len(_metrics.runs),
+        "record_path": _record_path,
     }
 
 
@@ -190,6 +194,12 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
     t0 = time.perf_counter()
     scene = _to_scene(payload)
     _last_scene = scene
+
+    if _record_path:
+        try:
+            append_scene(_record_path, scene)
+        except OSError as exc:
+            console.print(f"[red]Failed to record scene: {exc}[/]")
 
     console.print(
         f"[cyan][VISION][/] {len(scene.detections)} objects from dashboard — "
@@ -280,17 +290,27 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
 
 
 def main() -> None:
+    global _record_path
+
     parser = argparse.ArgumentParser(description="Vision bridge for robot-vision-dashboard")
     parser.add_argument("--mode", choices=["mock", "bedrock"], default=os.getenv("PIPELINE_MODE", "mock"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument(
+        "--record",
+        default=os.getenv("BRIDGE_RECORD_SCENES", "logs/scenes.jsonl"),
+        help="JSONL path to record incoming scenes (empty string disables)",
+    )
     args = parser.parse_args()
 
     os.environ["PIPELINE_MODE"] = args.mode
+    _record_path = args.record or None
 
     console.print(
         f"[bold]Bridge listening on http://{args.host}:{args.port}[/]  mode={args.mode}"
     )
+    if _record_path:
+        console.print(f"Recording scenes → {_record_path}")
     console.print("POST /scene  |  GET /health  |  GET /last  |  GET /scorecard")
 
     import uvicorn

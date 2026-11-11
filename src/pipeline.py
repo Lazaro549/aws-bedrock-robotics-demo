@@ -3,7 +3,8 @@ Main orchestrator: Vision → Reasoning → Policy → Robot → Metrics
 
 Usage:
     python -m src.pipeline --mode mock
-    bedrock-robotics-pipeline --mode mock
+    python -m src.pipeline --mode mock --scenes fixtures/scenes/sample.jsonl
+    bedrock-robotics-pipeline --mode mock --scenes fixtures/scenes/sample.jsonl
 """
 
 from __future__ import annotations
@@ -25,20 +26,26 @@ from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner
 from src.robot.commands import RobotCommand
 from src.robot.policy import apply_safety_policy
 from src.robot.simulator import RobotSimulator
+from src.vision.file_adapter import FileVision
 from src.vision.simulator import SimulatedVision
 
 console = Console()
 
 
-def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> None:
+def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> bool:
+    """Run one cycle. Returns False if vision is exhausted (file adapter)."""
     t0 = time.perf_counter()
 
     t_vis = time.perf_counter()
-    scene = vision.capture()
+    try:
+        scene = vision.capture()
+    except StopIteration:
+        console.print("[yellow]No more scenes in file.[/]")
+        return False
     vision_latency = time.perf_counter() - t_vis
 
     console.print(
-        f"[bold cyan][VISION][/] {len(scene.detections)} objects — "
+        f"[bold cyan][VISION][/] {scene.frame_id} · {len(scene.detections)} objects — "
         + ", ".join(f"{d.label}({d.confidence:.2f})" for d in scene.detections)
     )
 
@@ -54,7 +61,6 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
     )
     console.print(f"         {decision.reasoning}")
 
-    # Safety policy
     policy = apply_safety_policy(decision, scene, robot_state=robot.state)
     if policy.applied:
         console.print(
@@ -108,6 +114,7 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
     table.add_row("Policy", "applied" if policy.applied else "pass")
     table.add_row("Success", str(result.success))
     console.print(Panel(table, title="[METRIC]", border_style="dim"))
+    return True
 
 
 def main() -> None:
@@ -115,9 +122,14 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Vision → Bedrock → Policy → Robot demo pipeline")
     parser.add_argument("--mode", choices=["mock", "bedrock"], default=os.getenv("PIPELINE_MODE", "mock"))
-    parser.add_argument("--loop", action="store_true", help="Run continuously")
+    parser.add_argument("--loop", action="store_true", help="Run continuously (or cycle file scenes)")
     parser.add_argument("--interval", type=float, default=4.0, help="Seconds between loops")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--scenes",
+        default=None,
+        help="Path to .json / .jsonl scene file for offline replay (skips simulator)",
+    )
     parser.add_argument(
         "--scorecard",
         default="logs/scorecard-pipeline.json",
@@ -125,9 +137,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    vision = SimulatedVision(seed=args.seed)
     robot = RobotSimulator(seed=args.seed)
     metrics = MetricsCollector(log_path="logs/pipeline.jsonl")
+
+    if args.scenes:
+        vision = FileVision(args.scenes, loop=args.loop)
+        console.print(f"[bold]Vision source:[/] file ({args.scenes}) · {len(vision)} scene(s)")
+    else:
+        vision = SimulatedVision(seed=args.seed)
+        console.print("[bold]Vision source:[/] simulator")
 
     if args.mode == "bedrock":
         console.print("[bold]Using Amazon Bedrock (Claude)[/]")
@@ -142,9 +160,15 @@ def main() -> None:
     ))
 
     try:
-        if args.loop:
+        if args.scenes and not args.loop:
+            # Drain the file once
+            while run_once(args.mode, vision, reasoner, robot, metrics):
+                console.print()
+        elif args.loop:
             while True:
-                run_once(args.mode, vision, reasoner, robot, metrics)
+                ok = run_once(args.mode, vision, reasoner, robot, metrics)
+                if not ok:
+                    break
                 console.print()
                 time.sleep(args.interval)
         else:
@@ -152,7 +176,10 @@ def main() -> None:
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped by user[/]")
 
-    card = metrics.scorecard(session_label=f"pipeline-{args.mode}")
+    label = f"pipeline-{args.mode}"
+    if args.scenes:
+        label += "-file"
+    card = metrics.scorecard(session_label=label)
     print_scorecard(card, console=console)
     if args.scorecard:
         path = write_scorecard_json(card, args.scorecard)
