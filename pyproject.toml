@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-bedrock-robotics-demo"
-version = "1.1.0"
+version = "1.5.0"
 description = "Vision → Amazon Bedrock reasoning → simulated robot commands, with metrics and HTTP bridge."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,7 @@ dev = ["pytest>=8.0.0"]
 [project.scripts]
 bedrock-robotics-pipeline = "src.pipeline:main"
 bedrock-robotics-bridge = "src.bridge_server:main"
+bedrock-robotics-evaluate = "src.evaluate:main"
 
 [project.urls]
 Homepage = "https://github.com/Lazaro549/aws-bedrock-robotics-demo"

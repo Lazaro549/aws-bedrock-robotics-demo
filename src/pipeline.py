@@ -4,7 +4,7 @@ Main orchestrator: Vision → Reasoning → Policy → Robot → Metrics
 Usage:
     python -m src.pipeline --mode mock
     python -m src.pipeline --mode mock --scenes fixtures/scenes/sample.jsonl
-    bedrock-robotics-pipeline --mode mock --scenes fixtures/scenes/sample.jsonl
+    python -m src.pipeline --mode mock --scenes fixtures/scenes/policy.jsonl
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ console = Console()
 
 
 def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> bool:
-    """Run one cycle. Returns False if vision is exhausted (file adapter)."""
     t0 = time.perf_counter()
 
     t_vis = time.perf_counter()
@@ -141,7 +140,14 @@ def main() -> None:
     metrics = MetricsCollector(log_path="logs/pipeline.jsonl")
 
     if args.scenes:
-        vision = FileVision(args.scenes, loop=args.loop)
+        try:
+            vision = FileVision(args.scenes, loop=args.loop)
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise SystemExit(1) from exc
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise SystemExit(1) from exc
         console.print(f"[bold]Vision source:[/] file ({args.scenes}) · {len(vision)} scene(s)")
     else:
         vision = SimulatedVision(seed=args.seed)
@@ -161,7 +167,6 @@ def main() -> None:
 
     try:
         if args.scenes and not args.loop:
-            # Drain the file once
             while run_once(args.mode, vision, reasoner, robot, metrics):
                 console.print()
         elif args.loop:

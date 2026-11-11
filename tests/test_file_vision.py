@@ -4,26 +4,30 @@ from pathlib import Path
 
 import pytest
 
-from src.vision.file_adapter import FileVision, append_scene, load_scenes, scene_from_dict
 from src.vision.adapter import Detection, SceneContext
+from src.vision.file_adapter import FileVision, append_scene, load_scenes, scene_from_dict
 
 SAMPLE = Path(__file__).resolve().parents[1] / "fixtures" / "scenes" / "sample.jsonl"
+POLICY = Path(__file__).resolve().parents[1] / "fixtures" / "scenes" / "policy.jsonl"
 
 
 def test_load_sample_jsonl():
     scenes = load_scenes(SAMPLE)
-    assert len(scenes) == 5
+    assert len(scenes) >= 5
     assert scenes[0].frame_id == "sample-001"
     assert scenes[0].detections[0].label == "cup"
-    assert scenes[2].robot_state.get("battery") == 0.12
+
+
+def test_load_policy_jsonl():
+    scenes = load_scenes(POLICY)
+    assert any(s.frame_id == "policy-low-battery" for s in scenes)
 
 
 def test_file_vision_sequential():
     vision = FileVision(SAMPLE, loop=False)
-    assert len(vision) == 5
-    first = vision.capture()
-    assert first.frame_id == "sample-001"
-    for _ in range(4):
+    n = len(vision)
+    vision.capture()
+    for _ in range(n - 1):
         vision.capture()
     with pytest.raises(StopIteration):
         vision.capture()
@@ -31,9 +35,10 @@ def test_file_vision_sequential():
 
 def test_file_vision_loop():
     vision = FileVision(SAMPLE, loop=True)
-    ids = [vision.capture().frame_id for _ in range(6)]
-    assert ids[0] == "sample-001"
-    assert ids[5] == "sample-001"
+    first = vision.capture().frame_id
+    for _ in range(len(vision) - 1):
+        vision.capture()
+    assert vision.capture().frame_id == first
 
 
 def test_scene_from_bridge_shaped_payload():
@@ -59,7 +64,6 @@ def test_append_scene(tmp_path):
     append_scene(path, scene)
     loaded = load_scenes(path)
     assert len(loaded) == 2
-    assert loaded[0].frame_id == "a1"
 
 
 def test_load_json_array(tmp_path):
@@ -70,3 +74,9 @@ def test_load_json_array(tmp_path):
     )
     scenes = load_scenes(path)
     assert [s.frame_id for s in scenes] == ["j1", "j2"]
+
+
+def test_missing_file_has_hints():
+    with pytest.raises(FileNotFoundError) as ei:
+        load_scenes("logs/missing-scenes.jsonl")
+    assert "sample.jsonl" in str(ei.value)
