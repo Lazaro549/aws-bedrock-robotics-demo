@@ -5,6 +5,7 @@ End-to-end pipeline that connects computer vision, Amazon Bedrock (Claude), and 
 
 > *I build AI and robotics systems, then measure how they behave.*
 
+[![CI](https://github.com/Lazaro549/aws-bedrock-robotics-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/Lazaro549/aws-bedrock-robotics-demo/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-orange.svg)](https://aws.amazon.com/bedrock/)
@@ -81,6 +82,24 @@ Example output:
 
 ---
 
+## Tests
+
+```bash
+pip install -r requirements.txt
+pytest -q
+```
+
+Coverage includes:
+
+- Pipeline smoke (vision → mock reasoner → robot)
+- Bridge HTTP (`/health`, `/scene`, `/last`)
+- Bbox normalization and payload validation
+- Robot command schema checks
+
+CI runs the same suite on Python 3.11 and 3.12 via GitHub Actions.
+
+---
+
 ## Project structure
 
 ```
@@ -96,6 +115,10 @@ aws-bedrock-robotics-demo/
 │   ├── architecture.md
 │   └── integration-dashboard.md
 ├── tests/
+│   ├── test_pipeline_smoke.py
+│   ├── test_bridge.py
+│   └── test_commands.py
+├── .github/workflows/ci.yml
 ├── .env.example
 └── requirements.txt
 ```
