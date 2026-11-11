@@ -7,7 +7,6 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-# Force mock mode before importing the app module state used at startup
 os.environ["PIPELINE_MODE"] = "mock"
 
 from src.bridge_server import (  # noqa: E402
@@ -22,7 +21,6 @@ from src.reasoning.bedrock_client import MockReasoner
 
 @pytest.fixture()
 def client(monkeypatch):
-    """TestClient with MockReasoner already initialized."""
     import src.bridge_server as bridge
 
     monkeypatch.setattr(bridge, "_reasoner", MockReasoner())
@@ -30,6 +28,10 @@ def client(monkeypatch):
     monkeypatch.setattr(bridge, "_last_scene", None)
     monkeypatch.setattr(bridge, "_last_decision", None)
     monkeypatch.setattr(bridge, "_last_result", None)
+    # Fresh metrics collector so scorecard tests are isolated
+    from src.metrics.collector import MetricsCollector
+
+    monkeypatch.setattr(bridge, "_metrics", MetricsCollector())
 
     with TestClient(app) as c:
         yield c
@@ -43,6 +45,13 @@ def test_health_ok(client):
     assert body["mode"] == "mock"
     assert body["has_last_scene"] is False
     assert body["has_last_decision"] is False
+
+
+def test_scorecard_empty(client):
+    response = client.get("/scorecard")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runs"] == 0
 
 
 def test_last_before_scene_is_404(client):
@@ -83,12 +92,24 @@ def test_scene_returns_decision(client):
     assert isinstance(body["reasoning"], str)
     assert "robot_success" in body
     assert "total_latency_s" in body
+    assert "estimated_cost_usd" in body
+
+
+def test_scene_then_scorecard(client):
+    client.post("/scene", json={"detections": [{"label": "cup", "confidence": 0.91}]})
+    client.post("/scene", json={"detections": [{"label": "person", "confidence": 0.8}]})
+    response = client.get("/scorecard")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runs"] == 2
+    assert "latency_s" in body
+    assert "p50" in body["latency_s"]["total"]
+    assert "p95" in body["latency_s"]["total"]
+    assert "estimated_cost_usd" in body
 
 
 def test_scene_then_last(client):
-    payload = {
-        "detections": [{"label": "person", "confidence": 0.88}],
-    }
+    payload = {"detections": [{"label": "person", "confidence": 0.88}]}
     post = client.post("/scene", json=payload)
     assert post.status_code == 200
 
@@ -115,9 +136,7 @@ def test_scene_empty_detections(client):
 
 
 def test_scene_invalid_confidence_rejected(client):
-    payload = {
-        "detections": [{"label": "cup", "confidence": 1.5}],
-    }
+    payload = {"detections": [{"label": "cup", "confidence": 1.5}]}
     response = client.post("/scene", json=payload)
     assert response.status_code == 422
 
@@ -146,7 +165,9 @@ def test_to_scene_preserves_track_id():
     payload = IncomingScene(
         frame_id="f1",
         detections=[
-            IncomingDetection(label="bottle", confidence=0.8, track_id=7, bbox=[0.1, 0.1, 0.2, 0.3])
+            IncomingDetection(
+                label="bottle", confidence=0.8, track_id=7, bbox=[0.1, 0.1, 0.2, 0.3]
+            )
         ],
     )
     scene = _to_scene(payload)

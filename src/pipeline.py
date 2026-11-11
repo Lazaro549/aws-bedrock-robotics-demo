@@ -21,6 +21,7 @@ from rich.table import Table
 
 from src.metrics.collector import MetricsCollector, PipelineMetrics
 from src.metrics.cost import estimate_cost_usd
+from src.metrics.scorecard import print_scorecard, write_scorecard_json
 from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner
 from src.robot.commands import RobotCommand
 from src.robot.simulator import RobotSimulator
@@ -104,6 +105,11 @@ def main() -> None:
     parser.add_argument("--loop", action="store_true", help="Run continuously")
     parser.add_argument("--interval", type=float, default=4.0, help="Seconds between loops")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--scorecard",
+        default="logs/scorecard-pipeline.json",
+        help="Path to write session scorecard JSON (empty string to skip file)",
+    )
     args = parser.parse_args()
 
     vision = SimulatedVision(seed=args.seed)
@@ -133,14 +139,11 @@ def main() -> None:
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped by user[/]")
 
-    summary = metrics.summary()
-    if summary:
-        console.print("\n[bold]Session summary[/]")
-        for k, v in summary.items():
-            if isinstance(v, float) and "cost" in k:
-                console.print(f"  {k}: ${v:.6f}")
-            else:
-                console.print(f"  {k}: {v}")
+    card = metrics.scorecard(session_label=f"pipeline-{args.mode}")
+    print_scorecard(card, console=console)
+    if args.scorecard:
+        path = write_scorecard_json(card, args.scorecard)
+        console.print(f"[dim]Scorecard written to {path}[/]")
 
 
 if __name__ == "__main__":

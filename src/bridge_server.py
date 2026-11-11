@@ -28,6 +28,7 @@ from rich.console import Console
 
 from src.metrics.collector import MetricsCollector, PipelineMetrics
 from src.metrics.cost import estimate_cost_usd
+from src.metrics.scorecard import build_scorecard, print_scorecard, write_scorecard_json
 from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner, RobotDecision
 from src.robot.commands import RobotCommand
 from src.robot.simulator import RobotSimulator
@@ -36,7 +37,6 @@ from src.vision.adapter import Detection, SceneContext
 load_dotenv()
 console = Console()
 
-# Shared state (single-process demo)
 _reasoner: MockReasoner | BedrockReasoner | None = None
 _robot = RobotSimulator()
 _metrics = MetricsCollector(log_path="logs/bridge.jsonl")
@@ -61,12 +61,18 @@ def _init_reasoner() -> None:
 async def lifespan(_app: FastAPI):
     _init_reasoner()
     yield
+    # Shutdown: emit session scorecard
+    card = build_scorecard(_metrics, session_label=f"bridge-{_mode}")
+    print_scorecard(card, console=console)
+    if card.get("runs", 0) > 0:
+        path = write_scorecard_json(card, "logs/scorecard-bridge.json")
+        console.print(f"[dim]Scorecard written to {path}[/]")
 
 
 app = FastAPI(
     title="aws-bedrock-robotics-demo bridge",
     description="Receives vision scenes from robot-vision-dashboard and returns robot decisions.",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -158,7 +164,14 @@ def health() -> dict:
         "mode": _mode,
         "has_last_scene": _last_scene is not None,
         "has_last_decision": _last_decision is not None,
+        "runs": len(_metrics.runs),
     }
+
+
+@app.get("/scorecard")
+def scorecard() -> dict:
+    """Live session scorecard (success rate, p50/p95 latency, tokens, cost)."""
+    return build_scorecard(_metrics, session_label=f"bridge-{_mode}")
 
 
 @app.get("/last")
@@ -265,7 +278,7 @@ def main() -> None:
     console.print(
         f"[bold]Bridge listening on http://{args.host}:{args.port}[/]  mode={args.mode}"
     )
-    console.print("POST /scene  |  GET /health  |  GET /last")
+    console.print("POST /scene  |  GET /health  |  GET /last  |  GET /scorecard")
 
     import uvicorn
 

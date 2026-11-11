@@ -45,17 +45,25 @@ class MetricsCollector:
                 f.write(json.dumps(asdict(metrics)) + "\n")
 
     def summary(self) -> dict:
-        if not self.runs:
+        """Backward-compatible flat summary (prefer scorecard() for full view)."""
+        from src.metrics.scorecard import build_scorecard
+
+        card = build_scorecard(self)
+        if card.get("runs", 0) == 0:
             return {}
-        n = len(self.runs)
         return {
-            "runs": n,
-            "success_rate": sum(1 for r in self.runs if r.success) / n,
-            "avg_total_latency_s": sum(r.total_latency_s for r in self.runs) / n,
-            "avg_reasoning_latency_s": sum(r.reasoning_latency_s for r in self.runs) / n,
-            "total_input_tokens": sum(r.input_tokens for r in self.runs),
-            "total_output_tokens": sum(r.output_tokens for r in self.runs),
-            "total_estimated_cost_usd": round(
-                sum(r.estimated_cost_usd for r in self.runs), 8
-            ),
+            "runs": card["runs"],
+            "success_rate": card["success_rate"],
+            "avg_total_latency_s": card["latency_s"]["total"]["avg"],
+            "p50_total_latency_s": card["latency_s"]["total"]["p50"],
+            "p95_total_latency_s": card["latency_s"]["total"]["p95"],
+            "avg_reasoning_latency_s": card["latency_s"]["reasoning"]["avg"],
+            "total_input_tokens": card["tokens"]["input_total"],
+            "total_output_tokens": card["tokens"]["output_total"],
+            "total_estimated_cost_usd": card["estimated_cost_usd"]["total"],
         }
+
+    def scorecard(self, session_label: str = "session") -> dict:
+        from src.metrics.scorecard import build_scorecard
+
+        return build_scorecard(self, session_label=session_label)
