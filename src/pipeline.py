@@ -1,10 +1,5 @@
 """
 Main orchestrator: Vision → Reasoning → Policy → Robot → Metrics
-
-Usage:
-    python -m src.pipeline --mode mock
-    python -m src.pipeline --mode mock --scenes fixtures/scenes/sample.jsonl
-    python -m src.pipeline --mode mock --scenes fixtures/scenes/policy.jsonl
 """
 
 from __future__ import annotations
@@ -21,6 +16,7 @@ from rich.table import Table
 
 from src.metrics.collector import MetricsCollector, PipelineMetrics
 from src.metrics.cost import estimate_cost_usd
+from src.metrics.export_csv import write_scorecard_csv
 from src.metrics.scorecard import print_scorecard, write_scorecard_json
 from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner
 from src.robot.commands import RobotCommand
@@ -32,7 +28,15 @@ from src.vision.simulator import SimulatedVision
 console = Console()
 
 
-def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> bool:
+def run_once(
+    mode: str,
+    vision,
+    reasoner,
+    robot,
+    metrics: MetricsCollector,
+    *,
+    apply_policy: bool = True,
+) -> bool:
     t0 = time.perf_counter()
 
     t_vis = time.perf_counter()
@@ -60,13 +64,20 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> b
     )
     console.print(f"         {decision.reasoning}")
 
-    policy = apply_safety_policy(decision, scene, robot_state=robot.state)
-    if policy.applied:
-        console.print(
-            f"[bold yellow][POLICY][/] {policy.original_command} → {policy.decision.command}  "
-            f"({', '.join(policy.rules_fired)})"
-        )
-        decision = policy.decision
+    policy_applied = False
+    policy_rules: list[str] = []
+    if apply_policy:
+        policy = apply_safety_policy(decision, scene, robot_state=robot.state)
+        policy_applied = policy.applied
+        policy_rules = policy.rules_fired
+        if policy.applied:
+            console.print(
+                f"[bold yellow][POLICY][/] {policy.original_command} → {policy.decision.command}  "
+                f"({', '.join(policy.rules_fired)})"
+            )
+            decision = policy.decision
+    else:
+        console.print("[dim][POLICY] disabled[/]")
 
     cmd = RobotCommand(
         name=decision.command,
@@ -86,12 +97,12 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> b
 
     total = time.perf_counter() - t0
     notes = result.message
-    if policy.applied:
-        notes = f"[policy:{','.join(policy.rules_fired)}] {notes}"
+    if policy_applied:
+        notes = f"[policy:{','.join(policy_rules)}] {notes}"
 
     m = PipelineMetrics(
         timestamp=datetime.now(timezone.utc).isoformat(),
-        mode=mode,
+        mode=mode if apply_policy else f"{mode}-nopolicy",
         vision_latency_s=round(vision_latency, 4),
         reasoning_latency_s=round(reasoning_latency, 4),
         robot_latency_s=round(robot_latency, 4),
@@ -110,7 +121,7 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> b
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_row("Total latency", f"{total:.3f}s")
     table.add_row("Est. cost (USD)", f"${cost:.6f}")
-    table.add_row("Policy", "applied" if policy.applied else "pass")
+    table.add_row("Policy", "applied" if policy_applied else ("pass" if apply_policy else "off"))
     table.add_row("Success", str(result.success))
     console.print(Panel(table, title="[METRIC]", border_style="dim"))
     return True
@@ -121,31 +132,23 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Vision → Bedrock → Policy → Robot demo pipeline")
     parser.add_argument("--mode", choices=["mock", "bedrock"], default=os.getenv("PIPELINE_MODE", "mock"))
-    parser.add_argument("--loop", action="store_true", help="Run continuously (or cycle file scenes)")
-    parser.add_argument("--interval", type=float, default=4.0, help="Seconds between loops")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--interval", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument(
-        "--scenes",
-        default=None,
-        help="Path to .json / .jsonl scene file for offline replay (skips simulator)",
-    )
-    parser.add_argument(
-        "--scorecard",
-        default="logs/scorecard-pipeline.json",
-        help="Path to write session scorecard JSON (empty string to skip file)",
-    )
+    parser.add_argument("--scenes", default=None)
+    parser.add_argument("--no-policy", action="store_true", help="Disable safety policy")
+    parser.add_argument("--scorecard", default="logs/scorecard-pipeline.json")
+    parser.add_argument("--csv", default="logs/scorecard-pipeline.csv", help="CSV export path (empty to skip)")
     args = parser.parse_args()
 
     robot = RobotSimulator(seed=args.seed)
     metrics = MetricsCollector(log_path="logs/pipeline.jsonl")
+    apply_policy = not args.no_policy
 
     if args.scenes:
         try:
             vision = FileVision(args.scenes, loop=args.loop)
-        except FileNotFoundError as exc:
-            console.print(f"[red]{exc}[/]")
-            raise SystemExit(1) from exc
-        except ValueError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             console.print(f"[red]{exc}[/]")
             raise SystemExit(1) from exc
         console.print(f"[bold]Vision source:[/] file ({args.scenes}) · {len(vision)} scene(s)")
@@ -160,35 +163,43 @@ def main() -> None:
         console.print("[bold]Using MockReasoner (no AWS calls)[/]")
         reasoner = MockReasoner()
 
-    console.print(Panel.fit(
-        "[bold]aws-bedrock-robotics-demo[/]\nVision → Reasoning → Policy → Action → Measure",
-        border_style="green",
-    ))
+    console.print(
+        Panel.fit(
+            "[bold]aws-bedrock-robotics-demo[/]\n"
+            f"Vision → Reasoning → {'Policy → ' if apply_policy else ''}Action → Measure",
+            border_style="green",
+        )
+    )
 
     try:
         if args.scenes and not args.loop:
-            while run_once(args.mode, vision, reasoner, robot, metrics):
+            while run_once(args.mode, vision, reasoner, robot, metrics, apply_policy=apply_policy):
                 console.print()
         elif args.loop:
             while True:
-                ok = run_once(args.mode, vision, reasoner, robot, metrics)
+                ok = run_once(args.mode, vision, reasoner, robot, metrics, apply_policy=apply_policy)
                 if not ok:
                     break
                 console.print()
                 time.sleep(args.interval)
         else:
-            run_once(args.mode, vision, reasoner, robot, metrics)
+            run_once(args.mode, vision, reasoner, robot, metrics, apply_policy=apply_policy)
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped by user[/]")
 
     label = f"pipeline-{args.mode}"
     if args.scenes:
         label += "-file"
+    if not apply_policy:
+        label += "-nopolicy"
     card = metrics.scorecard(session_label=label)
     print_scorecard(card, console=console)
     if args.scorecard:
         path = write_scorecard_json(card, args.scorecard)
-        console.print(f"[dim]Scorecard written to {path}[/]")
+        console.print(f"[dim]Scorecard JSON → {path}[/]")
+    if args.csv:
+        path = write_scorecard_csv(card, args.csv)
+        console.print(f"[dim]Scorecard CSV  → {path}[/]")
 
 
 if __name__ == "__main__":

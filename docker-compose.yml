@@ -1,0 +1,12 @@
+services:
+  bridge:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      PIPELINE_MODE: mock
+      BRIDGE_RECORD_SCENES: /app/logs/scenes.jsonl
+      BRIDGE_RATE_LIMIT_PER_MIN: "30"
+    volumes:
+      - ./logs:/app/logs
+    command: ["python", "-m", "src.bridge_server", "--host", "0.0.0.0", "--port", "8787", "--mode", "mock"]

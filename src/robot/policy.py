@@ -3,8 +3,9 @@
 Rules (safe by default):
 - Low battery → force STOP
 - PICK / APPROACH require a high-confidence detection of the target
+- Person near a PICK/APPROACH target → WAIT
 - MOVE_TO coordinates are clamped to the workspace [0, 1]
-- Decision confidence below floor → force WAIT (or STOP if critical)
+- Decision confidence below floor → force WAIT
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.reasoning.bedrock_client import RobotDecision
-from src.vision.adapter import SceneContext
+from src.vision.adapter import Detection, SceneContext
 
 
 @dataclass
@@ -24,6 +25,8 @@ class PolicyConfig:
     min_decision_confidence: float = 0.35
     workspace_min: float = 0.0
     workspace_max: float = 1.0
+    person_proximity: float = 0.35  # normalized center distance
+    min_person_confidence: float = 0.6
 
 
 @dataclass
@@ -45,12 +48,54 @@ def _detection_confidence(scene: SceneContext, label: str | None) -> float:
     return best
 
 
+def _bbox_center(det: Detection) -> tuple[float, float] | None:
+    if not det.bbox or len(det.bbox) < 4:
+        return None
+    x1, y1, x2, y2 = det.bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def _best_detection(scene: SceneContext, label: str | None) -> Detection | None:
+    if not label:
+        return None
+    label_l = label.lower()
+    best: Detection | None = None
+    for d in scene.detections:
+        if d.label.lower() == label_l:
+            if best is None or d.confidence > best.confidence:
+                best = d
+    return best
+
+
+def _person_near_target(scene: SceneContext, target_label: str | None, cfg: PolicyConfig) -> bool:
+    target = _best_detection(scene, target_label)
+    if target is None:
+        return False
+    t_center = _bbox_center(target)
+    if t_center is None:
+        # No geometry: treat high-confidence person in scene as nearby
+        return any(
+            d.label.lower() == "person" and d.confidence >= cfg.min_person_confidence
+            for d in scene.detections
+        )
+
+    for d in scene.detections:
+        if d.label.lower() != "person" or d.confidence < cfg.min_person_confidence:
+            continue
+        p_center = _bbox_center(d)
+        if p_center is None:
+            return True
+        dist = ((t_center[0] - p_center[0]) ** 2 + (t_center[1] - p_center[1]) ** 2) ** 0.5
+        if dist <= cfg.person_proximity:
+            return True
+    return False
+
+
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
 def _battery_level(robot_state: dict[str, Any], scene: SceneContext) -> float | None:
-    """Prefer live robot state; fall back to scene.robot_state."""
     for source in (robot_state, scene.robot_state):
         if not source:
             continue
@@ -60,7 +105,6 @@ def _battery_level(robot_state: dict[str, Any], scene: SceneContext) -> float | 
                 val = float(raw)
             except (TypeError, ValueError):
                 continue
-            # Accept 0–1 or 0–100 scales
             if val > 1.0:
                 val = val / 100.0
             return _clamp(val, 0.0, 1.0)
@@ -73,7 +117,6 @@ def apply_safety_policy(
     robot_state: dict[str, Any] | None = None,
     config: PolicyConfig | None = None,
 ) -> PolicyResult:
-    """Return a possibly rewritten decision plus which rules fired."""
     cfg = config or PolicyConfig()
     robot_state = robot_state or {}
     rules: list[str] = []
@@ -88,15 +131,12 @@ def apply_safety_policy(
     battery = _battery_level(robot_state, scene)
     if battery is not None and battery < cfg.min_battery:
         if command not in {"STOP", "WAIT"}:
-            rules.append(
-                f"low_battery:{battery:.2f}<{cfg.min_battery:.2f}→STOP"
-            )
+            rules.append(f"low_battery:{battery:.2f}<{cfg.min_battery:.2f}→STOP")
             command = "STOP"
             params = {}
             reasoning = (
                 f"[policy] Battery {battery:.0%} below threshold "
-                f"({cfg.min_battery:.0%}). Forcing STOP. Original: {original}. "
-                f"{reasoning}"
+                f"({cfg.min_battery:.0%}). Forcing STOP. Original: {original}. {reasoning}"
             )
 
     # 2) Decision confidence floor
@@ -133,11 +173,22 @@ def apply_safety_policy(
                 command = "STOP"
                 params = {}
                 reasoning = (
-                    f"[policy] Missing or weak target for {original}. "
-                    f"Forcing STOP. {reasoning}"
+                    f"[policy] Missing or weak target for {original}. Forcing STOP. {reasoning}"
                 )
 
-    # 4) Workspace clamp for MOVE_TO
+    # 4) Person near PICK/APPROACH target
+    if command in {"PICK", "APPROACH"}:
+        target = params.get("target_label")
+        if isinstance(target, str) and _person_near_target(scene, target, cfg):
+            rules.append(f"person_near_target:{target}→WAIT")
+            command = "WAIT"
+            params = {"seconds": 2}
+            reasoning = (
+                f"[policy] Person near target '{target}'. Forcing WAIT for safety. "
+                f"Original: {original}. {reasoning}"
+            )
+
+    # 5) Workspace clamp for MOVE_TO
     if command == "MOVE_TO":
         try:
             x = float(params.get("x", 0.5))

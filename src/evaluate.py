@@ -1,17 +1,9 @@
-"""Compare two reasoners on the same scene set (Mock vs Bedrock by default).
-
-Usage:
-    python -m src.evaluate --scenes fixtures/scenes/sample.jsonl
-    python -m src.evaluate --scenes fixtures/scenes/policy.jsonl --left mock --right mock
-    python -m src.evaluate --scenes fixtures/scenes/sample.jsonl --left mock --right bedrock
-    bedrock-robotics-evaluate --scenes fixtures/scenes/sample.jsonl
-"""
+"""Compare two reasoners on the same scene set (Mock vs Bedrock by default)."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,7 +14,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from src.metrics.cost import estimate_cost_usd
-from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner, Reasoner, RobotDecision
+from src.metrics.export_csv import write_eval_csv
+from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner, Reasoner
 from src.robot.policy import apply_safety_policy
 from src.vision.adapter import SceneContext
 from src.vision.file_adapter import load_scenes
@@ -156,23 +149,12 @@ def main() -> None:
     load_dotenv()
 
     parser = argparse.ArgumentParser(description="Compare two reasoners on the same scenes")
-    parser.add_argument(
-        "--scenes",
-        default="fixtures/scenes/sample.jsonl",
-        help="Path to .json / .jsonl scenes",
-    )
+    parser.add_argument("--scenes", default="fixtures/scenes/sample.jsonl")
     parser.add_argument("--left", default="mock", choices=["mock", "bedrock"])
     parser.add_argument("--right", default="bedrock", choices=["mock", "bedrock"])
-    parser.add_argument(
-        "--no-policy",
-        action="store_true",
-        help="Disable safety policy for both reasoners",
-    )
-    parser.add_argument(
-        "--out",
-        default="logs/eval-report.json",
-        help="Write full JSON report (empty string to skip)",
-    )
+    parser.add_argument("--no-policy", action="store_true")
+    parser.add_argument("--out", default="logs/eval-report.json")
+    parser.add_argument("--csv", default="logs/eval-report.csv")
     args = parser.parse_args()
 
     try:
@@ -192,13 +174,10 @@ def main() -> None:
         )
     )
 
-    left = _make_reasoner(args.left)
-    right = _make_reasoner(args.right)
-
     report = compare_scenes(
         scenes,
-        left,
-        right,
+        _make_reasoner(args.left),
+        _make_reasoner(args.right),
         left_name=args.left,
         right_name=args.right,
         apply_policy=not args.no_policy,
@@ -209,7 +188,10 @@ def main() -> None:
         path = Path(args.out)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        console.print(f"[dim]Report written to {path}[/]")
+        console.print(f"[dim]JSON report → {path}[/]")
+    if args.csv:
+        path = write_eval_csv(report, args.csv)
+        console.print(f"[dim]CSV report  → {path}[/]")
 
 
 if __name__ == "__main__":

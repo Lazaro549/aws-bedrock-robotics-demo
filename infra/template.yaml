@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Minimal SAM skeleton for aws-bedrock-robotics-demo (HTTP API → Lambda placeholder).
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.12
+    MemorySize: 512
+
+Resources:
+  BridgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../
+      Handler: src.bridge_server.app
+      Description: Placeholder — adapt to Lambda Web Adapter or a thin handler wrapping process_scene.
+      Environment:
+        Variables:
+          PIPELINE_MODE: mock
+      Events:
+        ScenePost:
+          Type: HttpApi
+          Properties:
+            Path: /scene
+            Method: POST
+        HealthGet:
+          Type: HttpApi
+          Properties:
+            Path: /health
+            Method: GET
+
+Outputs:
+  ApiEndpoint:
+    Description: HTTP API endpoint
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

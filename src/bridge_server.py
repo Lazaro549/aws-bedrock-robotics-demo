@@ -1,21 +1,17 @@
-"""
-Vision bridge for robot-vision-dashboard.
-
-Flow: scene → reasoner → safety policy → robot → metrics
-Optionally records incoming scenes to JSONL for offline replay.
-"""
+"""Vision bridge with safety policy, scene recording, and simple rate limiting."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from rich.console import Console
@@ -41,6 +37,28 @@ _last_decision: RobotDecision | None = None
 _last_result: dict[str, Any] | None = None
 _mode = "mock"
 _record_path: str | None = os.getenv("BRIDGE_RECORD_SCENES", "logs/scenes.jsonl")
+_rate_limit_per_min = int(os.getenv("BRIDGE_RATE_LIMIT_PER_MIN", "30"))
+_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _client_key(request: Request) -> str:
+    if request.client:
+        return request.client.host or "unknown"
+    return "unknown"
+
+
+def _check_rate_limit(request: Request) -> None:
+    if _rate_limit_per_min <= 0:
+        return
+    key = _client_key(request)
+    now = time.time()
+    window = 60.0
+    bucket = _rate_buckets[key]
+    while bucket and now - bucket[0] > window:
+        bucket.popleft()
+    if len(bucket) >= _rate_limit_per_min:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again shortly.")
+    bucket.append(now)
 
 
 def _init_reasoner() -> None:
@@ -68,7 +86,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="aws-bedrock-robotics-demo bridge",
     description="Vision scenes → reasoning → safety policy → robot decision.",
-    version="1.4.0",
+    version="1.6.0",
     lifespan=lifespan,
 )
 
@@ -165,6 +183,7 @@ def health() -> dict:
         "has_last_decision": _last_decision is not None,
         "runs": len(_metrics.runs),
         "record_path": _record_path,
+        "rate_limit_per_min": _rate_limit_per_min,
     }
 
 
@@ -185,8 +204,10 @@ def last() -> dict:
 
 
 @app.post("/scene", response_model=DecisionResponse)
-def process_scene(payload: IncomingScene) -> DecisionResponse:
+def process_scene(payload: IncomingScene, request: Request) -> DecisionResponse:
     global _last_scene, _last_decision, _last_result
+
+    _check_rate_limit(request)
 
     if _reasoner is None:
         raise HTTPException(status_code=503, detail="Reasoner not initialized")
@@ -290,38 +311,34 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
 
 
 def main() -> None:
-    global _record_path
+    global _record_path, _rate_limit_per_min
 
     parser = argparse.ArgumentParser(description="Vision bridge for robot-vision-dashboard")
     parser.add_argument("--mode", choices=["mock", "bedrock"], default=os.getenv("PIPELINE_MODE", "mock"))
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--record", default=os.getenv("BRIDGE_RECORD_SCENES", "logs/scenes.jsonl"))
     parser.add_argument(
-        "--record",
-        default=os.getenv("BRIDGE_RECORD_SCENES", "logs/scenes.jsonl"),
-        help="JSONL path to record incoming scenes (empty string disables)",
+        "--rate-limit",
+        type=int,
+        default=int(os.getenv("BRIDGE_RATE_LIMIT_PER_MIN", "30")),
+        help="Max POST /scene per client per minute (0 disables)",
     )
     args = parser.parse_args()
 
     os.environ["PIPELINE_MODE"] = args.mode
     _record_path = args.record or None
+    _rate_limit_per_min = args.rate_limit
 
-    console.print(
-        f"[bold]Bridge listening on http://{args.host}:{args.port}[/]  mode={args.mode}"
-    )
+    console.print(f"[bold]Bridge listening on http://{args.host}:{args.port}[/]  mode={args.mode}")
     if _record_path:
         console.print(f"Recording scenes → {_record_path}")
+    console.print(f"Rate limit: {_rate_limit_per_min}/min per client" if _rate_limit_per_min else "Rate limit: off")
     console.print("POST /scene  |  GET /health  |  GET /last  |  GET /scorecard")
 
     import uvicorn
 
-    uvicorn.run(
-        "src.bridge_server:app",
-        host=args.host,
-        port=args.port,
-        reload=False,
-        log_level="info",
-    )
+    uvicorn.run("src.bridge_server:app", host=args.host, port=args.port, reload=False, log_level="info")
 
 
 if __name__ == "__main__":
