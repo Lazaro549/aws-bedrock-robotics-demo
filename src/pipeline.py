@@ -4,7 +4,7 @@ Main orchestrator: Vision → Reasoning → Robot → Metrics
 Usage:
     python -m src.pipeline --mode mock
     python -m src.pipeline --mode bedrock
-    python -m src.pipeline --mode bedrock --loop --interval 4
+    bedrock-robotics-pipeline --mode mock
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from src.metrics.collector import MetricsCollector, PipelineMetrics
+from src.metrics.cost import estimate_cost_usd
 from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner
 from src.robot.commands import RobotCommand
 from src.robot.simulator import RobotSimulator
@@ -31,7 +32,6 @@ console = Console()
 def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> None:
     t0 = time.perf_counter()
 
-    # 1. Vision
     t_vis = time.perf_counter()
     scene = vision.capture()
     vision_latency = time.perf_counter() - t_vis
@@ -41,19 +41,18 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
         + ", ".join(f"{d.label}({d.confidence:.2f})" for d in scene.detections)
     )
 
-    # 2. Reasoning
     t_rea = time.perf_counter()
     decision = reasoner.decide(scene)
     reasoning_latency = decision.latency_s or (time.perf_counter() - t_rea)
+    cost = estimate_cost_usd(decision.input_tokens, decision.output_tokens)
 
     console.print(
         f"[bold magenta][REASON][/] {decision.command} {decision.params}  "
         f"(conf={decision.confidence:.2f}, tokens={decision.input_tokens}/{decision.output_tokens}, "
-        f"latency={reasoning_latency:.2f}s)"
+        f"cost≈${cost:.6f}, latency={reasoning_latency:.2f}s)"
     )
     console.print(f"         {decision.reasoning}")
 
-    # 3. Robot
     cmd = RobotCommand(
         name=decision.command,
         params=decision.params,
@@ -72,7 +71,6 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
 
     total = time.perf_counter() - t0
 
-    # 4. Metrics
     m = PipelineMetrics(
         timestamp=datetime.now(timezone.utc).isoformat(),
         mode=mode,
@@ -85,6 +83,7 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
         success=result.success,
         input_tokens=decision.input_tokens,
         output_tokens=decision.output_tokens,
+        estimated_cost_usd=cost,
         model_id=decision.model_id,
         notes=result.message,
     )
@@ -92,6 +91,7 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_row("Total latency", f"{total:.3f}s")
+    table.add_row("Est. cost (USD)", f"${cost:.6f}")
     table.add_row("Success", str(result.success))
     console.print(Panel(table, title="[METRIC]", border_style="dim"))
 
@@ -137,7 +137,10 @@ def main() -> None:
     if summary:
         console.print("\n[bold]Session summary[/]")
         for k, v in summary.items():
-            console.print(f"  {k}: {v}")
+            if isinstance(v, float) and "cost" in k:
+                console.print(f"  {k}: ${v:.6f}")
+            else:
+                console.print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":

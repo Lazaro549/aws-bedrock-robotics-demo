@@ -17,7 +17,7 @@ End-to-end pipeline that connects computer vision, Amazon Bedrock (Claude), and 
 1. **Vision** — Receives (or simulates) object detections from a camera stream.
 2. **Reasoning** — Sends structured scene context to Claude on Amazon Bedrock.
 3. **Action** — Generates a robot command (move, pick, stop, inspect…).
-4. **Measure** — Logs latency, token usage, decision confidence and execution outcome.
+4. **Measure** — Logs latency, token usage, **estimated cost (USD)**, confidence and execution outcome.
 
 ```
 [ Camera / Dashboard / Simulator ]
@@ -31,26 +31,40 @@ End-to-end pipeline that connects computer vision, Amazon Bedrock (Claude), and 
 
 ---
 
-## Two ways to run
-
-### A) Local CLI (simulated vision)
+## Install
 
 ```bash
 git clone https://github.com/Lazaro549/aws-bedrock-robotics-demo.git
 cd aws-bedrock-robotics-demo
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
+```
 
-python -m src.pipeline --mode mock
-python -m src.pipeline --mode bedrock
+Entry points after install:
+
+```bash
+bedrock-robotics-pipeline --mode mock
+bedrock-robotics-bridge --mode mock --port 8787
+```
+
+(You can still use `python -m src.pipeline` / `python -m src.bridge_server`.)
+
+---
+
+## Two ways to run
+
+### A) Local CLI (simulated vision)
+
+```bash
+bedrock-robotics-pipeline --mode mock
+bedrock-robotics-pipeline --mode bedrock --loop --interval 5
 ```
 
 ### B) Live bridge with robot-vision-dashboard (real COCO-SSD)
 
 ```bash
 # Terminal 1 — bridge
-python -m src.bridge_server --mode mock --port 8787
-# or: python -m src.bridge_server --mode bedrock --port 8787
+bedrock-robotics-bridge --mode mock --port 8787
 
 # Terminal 2 — dashboard
 cd ../robot-vision-dashboard
@@ -60,43 +74,54 @@ python -m http.server 8000
 
 Full integration guide: [docs/integration-dashboard.md](docs/integration-dashboard.md)
 
----
+### C) Bridge dry-run with curl (no dashboard)
 
-## Quick start (CLI)
+With the bridge running on port 8787:
 
 ```bash
-cp .env.example .env   # only needed for --mode bedrock
-python -m src.pipeline --mode mock
-python -m src.pipeline --mode bedrock --loop --interval 5
+# Health
+curl -s http://127.0.0.1:8787/health | python -m json.tool
+
+# Send a synthetic scene
+curl -s -X POST http://127.0.0.1:8787/scene \
+  -H "Content-Type: application/json" \
+  -d '{
+    "frame_id": "curl-demo-1",
+    "frame_width": 1280,
+    "frame_height": 720,
+    "detections": [
+      {"label": "cup", "confidence": 0.93, "bbox": [120, 80, 260, 220], "track_id": 1},
+      {"label": "person", "confidence": 0.71, "bbox": [400, 100, 700, 600], "track_id": 2}
+    ],
+    "robot_state": {"battery": 88, "source": "curl"},
+    "environment": {"source": "cli", "model": "synthetic"}
+  }' | python -m json.tool
 ```
 
-Example output:
+Expected fields in the response: `command`, `params`, `confidence`, `reasoning`, `estimated_cost_usd`, `robot_success`, `total_latency_s`.
 
-```
-[VISION] Detected: person (0.92), cup (0.87), table (0.95)
-[REASON] Claude decided: APPROACH(target_label="cup")
-         Confidence: 0.81 | Tokens: 312 in / 148 out | Latency: 1.42s
-[ROBOT]  Executing: Approaching target 'cup'.
-[METRIC] Pipeline total: 1.67s | Success: true
-```
+---
+
+## Cost estimates
+
+Each Bedrock call records an **approximate** USD cost from token counts:
+
+- Defaults: $3 / 1M input tokens, $15 / 1M output tokens (Claude-class on Bedrock)
+- Override with `BEDROCK_INPUT_PRICE_PER_1M` and `BEDROCK_OUTPUT_PRICE_PER_1M` in `.env`
+- Mock mode reports `$0` (no model tokens)
+
+These numbers are for engineering visibility in demos — not a substitute for AWS Cost Explorer.
 
 ---
 
 ## Tests
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 pytest -q
 ```
 
-Coverage includes:
-
-- Pipeline smoke (vision → mock reasoner → robot)
-- Bridge HTTP (`/health`, `/scene`, `/last`)
-- Bbox normalization and payload validation
-- Robot command schema checks
-
-CI runs the same suite on Python 3.11 and 3.12 via GitHub Actions.
+CI runs the suite on Python 3.11 and 3.12.
 
 ---
 
@@ -105,22 +130,16 @@ CI runs the same suite on Python 3.11 and 3.12 via GitHub Actions.
 ```
 aws-bedrock-robotics-demo/
 ├── src/
-│   ├── vision/           # SceneContext + simulated vision
-│   ├── reasoning/        # Mock + Bedrock Claude clients
-│   ├── robot/            # Command schema + simulator
-│   ├── metrics/          # Latency / tokens / success
-│   ├── pipeline.py       # CLI orchestrator
-│   └── bridge_server.py  # FastAPI bridge for the dashboard
-├── docs/
-│   ├── architecture.md
-│   └── integration-dashboard.md
+│   ├── vision/
+│   ├── reasoning/
+│   ├── robot/
+│   ├── metrics/          # collector + cost estimates
+│   ├── pipeline.py
+│   └── bridge_server.py  # FastAPI + lifespan
 ├── tests/
-│   ├── test_pipeline_smoke.py
-│   ├── test_bridge.py
-│   └── test_commands.py
-├── .github/workflows/ci.yml
-├── .env.example
-└── requirements.txt
+├── docs/
+├── pyproject.toml
+└── .github/workflows/ci.yml
 ```
 
 ---
@@ -129,7 +148,7 @@ aws-bedrock-robotics-demo/
 
 | Principle | Implementation |
 |-----------|----------------|
-| **Measurable** | Every run emits structured metrics (latency, tokens, confidence, success) |
+| **Measurable** | Latency, tokens, estimated cost, confidence, success |
 | **Swappable** | Vision and robot layers are adapters |
 | **Safe by default** | Mock mode works without AWS credentials |
 | **Observable** | Full reasoning trace kept for every decision |

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List
+
+from src.metrics.cost import estimate_cost_usd
 
 
 @dataclass
@@ -22,6 +23,7 @@ class PipelineMetrics:
     success: bool
     input_tokens: int = 0
     output_tokens: int = 0
+    estimated_cost_usd: float = 0.0
     model_id: str = ""
     notes: str = ""
 
@@ -32,6 +34,10 @@ class MetricsCollector:
         self.log_path = Path(log_path) if log_path else None
 
     def record(self, metrics: PipelineMetrics) -> None:
+        if metrics.estimated_cost_usd == 0.0 and (metrics.input_tokens or metrics.output_tokens):
+            metrics.estimated_cost_usd = estimate_cost_usd(
+                metrics.input_tokens, metrics.output_tokens
+            )
         self.runs.append(metrics)
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,4 +55,7 @@ class MetricsCollector:
             "avg_reasoning_latency_s": sum(r.reasoning_latency_s for r in self.runs) / n,
             "total_input_tokens": sum(r.input_tokens for r in self.runs),
             "total_output_tokens": sum(r.output_tokens for r in self.runs),
+            "total_estimated_cost_usd": round(
+                sum(r.estimated_cost_usd for r in self.runs), 8
+            ),
         }

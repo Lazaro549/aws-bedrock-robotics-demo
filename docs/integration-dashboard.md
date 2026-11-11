@@ -12,7 +12,7 @@ This bridge closes the loop between **real browser computer vision** and **LLM r
  MockReasoner | Bedrock Claude
         ↓
  RobotSimulator
-        ↓  JSON decision
+        ↓  JSON decision (+ estimated_cost_usd)
  dashboard UI             (command + reasoning shown live)
 ```
 
@@ -20,85 +20,55 @@ This bridge closes the loop between **real browser computer vision** and **LLM r
 
 ```bash
 cd aws-bedrock-robotics-demo
-source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
-# Mock (no AWS)
-python -m src.bridge_server --mode mock --port 8787
-
-# Real Bedrock
-python -m src.bridge_server --mode bedrock --port 8787
+bedrock-robotics-bridge --mode mock --port 8787
+# or: bedrock-robotics-bridge --mode bedrock --port 8787
 ```
 
 Health check:
 
 ```bash
-curl http://127.0.0.1:8787/health
+curl -s http://127.0.0.1:8787/health | python -m json.tool
 ```
 
-## 2. Run the dashboard with bridge enabled
+## 2. Dry-run without the dashboard
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/scene \
+  -H "Content-Type: application/json" \
+  -d '{
+    "frame_id": "curl-demo-1",
+    "detections": [
+      {"label": "cup", "confidence": 0.93, "bbox": [0.1, 0.1, 0.3, 0.4], "track_id": 1}
+    ],
+    "robot_state": {"battery": 90}
+  }' | python -m json.tool
+```
+
+## 3. Run the dashboard with bridge enabled
 
 ```bash
 cd robot-vision-dashboard
 python -m http.server 8000
-# open http://127.0.0.1:8000
 ```
 
 In the dashboard:
 
 1. Enable **AI Bridge**
-2. Confirm endpoint `http://127.0.0.1:8787/scene`
+2. Endpoint `http://127.0.0.1:8787/scene` (or the Codespaces public URL + `/scene`)
 3. Start camera or load a video
-4. Watch detections stream to the bridge and decisions appear in the log / decision card
+4. Watch decisions appear in the decision card / log
 
-## 3. Payload contract
+## 4. Payload contract
 
-Dashboard → bridge (`POST /scene`):
+Dashboard → bridge (`POST /scene`): detections, optional bboxes, robot_state, frame size.
 
-```json
-{
-  "timestamp": "2026-11-09T04:00:00Z",
-  "frame_id": "dash-1731",
-  "frame_width": 1280,
-  "frame_height": 720,
-  "detections": [
-    {
-      "label": "cup",
-      "confidence": 0.91,
-      "bbox": [120, 80, 220, 200],
-      "track_id": 3
-    }
-  ],
-  "robot_state": {
-    "battery": 90,
-    "odometry_m": 12.6,
-    "network": "Connected"
-  },
-  "environment": {
-    "source": "browser",
-    "model": "coco-ssd"
-  }
-}
-```
-
-Bridge → dashboard:
-
-```json
-{
-  "command": "APPROACH",
-  "params": { "target_label": "cup" },
-  "confidence": 0.85,
-  "reasoning": "High-confidence cup detected...",
-  "latency_s": 1.42,
-  "robot_success": true,
-  "robot_message": "Approaching target 'cup'.",
-  "total_latency_s": 1.45
-}
-```
+Bridge → dashboard: `command`, `params`, `confidence`, `reasoning`, `estimated_cost_usd`, robot outcome, latencies.
 
 ## Design notes
 
 - CORS is open for local portfolio demos.
 - Bboxes may be pixels or normalized; the bridge normalizes when `frame_width/height` are present.
-- Throttling lives on the dashboard side (default ~1.5s) so Bedrock is not flooded.
-- The same `SceneContext` / `RobotDecision` models used by the CLI pipeline are reused here.
+- Throttling lives on the dashboard side (~1.5s) so Bedrock is not flooded.
+- Cost fields are approximate (token × configured $/1M); override via `.env`.

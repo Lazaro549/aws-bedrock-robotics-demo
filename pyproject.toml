@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aws-bedrock-robotics-demo"
+version = "1.1.0"
+description = "Vision → Amazon Bedrock reasoning → simulated robot commands, with metrics and HTTP bridge."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Lázaro Gómez Vitolo" }]
+keywords = ["amazon-bedrock", "robotics", "computer-vision", "llm", "fastapi", "claude"]
+dependencies = [
+  "boto3>=1.35.0",
+  "python-dotenv>=1.0.0",
+  "pydantic>=2.0.0",
+  "rich>=13.0.0",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+bedrock-robotics-pipeline = "src.pipeline:main"
+bedrock-robotics-bridge = "src.bridge_server:main"
+
+[project.urls]
+Homepage = "https://github.com/Lazaro549/aws-bedrock-robotics-demo"
+Repository = "https://github.com/Lazaro549/aws-bedrock-robotics-demo"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
