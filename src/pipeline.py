@@ -1,9 +1,8 @@
 """
-Main orchestrator: Vision → Reasoning → Robot → Metrics
+Main orchestrator: Vision → Reasoning → Policy → Robot → Metrics
 
 Usage:
     python -m src.pipeline --mode mock
-    python -m src.pipeline --mode bedrock
     bedrock-robotics-pipeline --mode mock
 """
 
@@ -24,6 +23,7 @@ from src.metrics.cost import estimate_cost_usd
 from src.metrics.scorecard import print_scorecard, write_scorecard_json
 from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner
 from src.robot.commands import RobotCommand
+from src.robot.policy import apply_safety_policy
 from src.robot.simulator import RobotSimulator
 from src.vision.simulator import SimulatedVision
 
@@ -54,6 +54,15 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
     )
     console.print(f"         {decision.reasoning}")
 
+    # Safety policy
+    policy = apply_safety_policy(decision, scene, robot_state=robot.state)
+    if policy.applied:
+        console.print(
+            f"[bold yellow][POLICY][/] {policy.original_command} → {policy.decision.command}  "
+            f"({', '.join(policy.rules_fired)})"
+        )
+        decision = policy.decision
+
     cmd = RobotCommand(
         name=decision.command,
         params=decision.params,
@@ -71,6 +80,9 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
     )
 
     total = time.perf_counter() - t0
+    notes = result.message
+    if policy.applied:
+        notes = f"[policy:{','.join(policy.rules_fired)}] {notes}"
 
     m = PipelineMetrics(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -86,13 +98,14 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
         output_tokens=decision.output_tokens,
         estimated_cost_usd=cost,
         model_id=decision.model_id,
-        notes=result.message,
+        notes=notes,
     )
     metrics.record(m)
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_row("Total latency", f"{total:.3f}s")
     table.add_row("Est. cost (USD)", f"${cost:.6f}")
+    table.add_row("Policy", "applied" if policy.applied else "pass")
     table.add_row("Success", str(result.success))
     console.print(Panel(table, title="[METRIC]", border_style="dim"))
 
@@ -100,7 +113,7 @@ def run_once(mode: str, vision, reasoner, robot, metrics: MetricsCollector) -> N
 def main() -> None:
     load_dotenv()
 
-    parser = argparse.ArgumentParser(description="Vision → Bedrock → Robot demo pipeline")
+    parser = argparse.ArgumentParser(description="Vision → Bedrock → Policy → Robot demo pipeline")
     parser.add_argument("--mode", choices=["mock", "bedrock"], default=os.getenv("PIPELINE_MODE", "mock"))
     parser.add_argument("--loop", action="store_true", help="Run continuously")
     parser.add_argument("--interval", type=float, default=4.0, help="Seconds between loops")
@@ -124,7 +137,7 @@ def main() -> None:
         reasoner = MockReasoner()
 
     console.print(Panel.fit(
-        "[bold]aws-bedrock-robotics-demo[/]\nVision → Reasoning → Action → Measure",
+        "[bold]aws-bedrock-robotics-demo[/]\nVision → Reasoning → Policy → Action → Measure",
         border_style="green",
     ))
 

@@ -1,14 +1,7 @@
 """
 Vision bridge for robot-vision-dashboard.
 
-Receives real COCO-SSD detections from the browser dashboard,
-runs the reasoning + robot layers, and returns the decision.
-
-Usage:
-    python -m src.bridge_server
-    bedrock-robotics-bridge --mode mock --port 8787
-
-Dashboard posts to: POST http://127.0.0.1:8787/scene
+Flow: scene → reasoner → safety policy → robot → metrics
 """
 
 from __future__ import annotations
@@ -31,6 +24,7 @@ from src.metrics.cost import estimate_cost_usd
 from src.metrics.scorecard import build_scorecard, print_scorecard, write_scorecard_json
 from src.reasoning.bedrock_client import BedrockReasoner, MockReasoner, RobotDecision
 from src.robot.commands import RobotCommand
+from src.robot.policy import apply_safety_policy
 from src.robot.simulator import RobotSimulator
 from src.vision.adapter import Detection, SceneContext
 
@@ -61,7 +55,6 @@ def _init_reasoner() -> None:
 async def lifespan(_app: FastAPI):
     _init_reasoner()
     yield
-    # Shutdown: emit session scorecard
     card = build_scorecard(_metrics, session_label=f"bridge-{_mode}")
     print_scorecard(card, console=console)
     if card.get("runs", 0) > 0:
@@ -71,8 +64,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="aws-bedrock-robotics-demo bridge",
-    description="Receives vision scenes from robot-vision-dashboard and returns robot decisions.",
-    version="1.2.0",
+    description="Vision scenes → reasoning → safety policy → robot decision.",
+    version="1.3.0",
     lifespan=lifespan,
 )
 
@@ -117,6 +110,9 @@ class DecisionResponse(BaseModel):
     robot_message: str
     robot_state: dict[str, Any]
     total_latency_s: float
+    policy_applied: bool = False
+    policy_rules: list[str] = Field(default_factory=list)
+    original_command: str | None = None
 
 
 def _normalize_bbox(
@@ -170,7 +166,6 @@ def health() -> dict:
 
 @app.get("/scorecard")
 def scorecard() -> dict:
-    """Live session scorecard (success rate, p50/p95 latency, tokens, cost)."""
     return build_scorecard(_metrics, session_label=f"bridge-{_mode}")
 
 
@@ -202,8 +197,17 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
     )
 
     decision = _reasoner.decide(scene)
-    _last_decision = decision
     cost = estimate_cost_usd(decision.input_tokens, decision.output_tokens)
+
+    policy = apply_safety_policy(decision, scene, robot_state=_robot.state)
+    if policy.applied:
+        console.print(
+            f"[yellow][POLICY][/] {policy.original_command} → {policy.decision.command} "
+            f"({', '.join(policy.rules_fired)})"
+        )
+        decision = policy.decision
+
+    _last_decision = decision
 
     cmd = RobotCommand(
         name=decision.command,
@@ -220,6 +224,8 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
         "duration_s": result.duration_s,
         "final_state": result.final_state,
         "estimated_cost_usd": cost,
+        "policy_applied": policy.applied,
+        "policy_rules": policy.rules_fired,
     }
 
     console.print(
@@ -229,6 +235,10 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
     console.print(f"         {decision.reasoning}")
     color = "green" if result.success else "red"
     console.print(f"[{color}][ROBOT][/] {result.message}")
+
+    notes = result.message
+    if policy.applied:
+        notes = f"[policy:{','.join(policy.rules_fired)}] {notes}"
 
     _metrics.record(
         PipelineMetrics(
@@ -245,7 +255,7 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
             output_tokens=decision.output_tokens,
             estimated_cost_usd=cost,
             model_id=decision.model_id,
-            notes=result.message,
+            notes=notes,
         )
     )
 
@@ -263,6 +273,9 @@ def process_scene(payload: IncomingScene) -> DecisionResponse:
         robot_message=result.message,
         robot_state=result.final_state,
         total_latency_s=round(total, 4),
+        policy_applied=policy.applied,
+        policy_rules=policy.rules_fired,
+        original_command=policy.original_command,
     )
 
 
