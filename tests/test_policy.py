@@ -83,3 +83,36 @@ def test_safe_command_passes():
     )
     assert not result.applied
     assert result.decision.command == "APPROACH"
+
+
+def test_move_to_missing_coordinate_forces_stop():
+    result = apply_safety_policy(_decision("MOVE_TO", {"x": 0.4}), _scene())
+    assert result.decision.command == "STOP"
+    assert result.applied
+
+
+def test_move_to_nan_coordinate_forces_stop():
+    result = apply_safety_policy(
+        _decision("MOVE_TO", {"x": float("nan"), "y": 0.4}), _scene()
+    )
+    assert result.decision.command == "STOP"
+
+
+def test_invalid_battery_telemetry_fails_safe():
+    scene = _scene(battery="unknown")
+    result = apply_safety_policy(
+        _decision("APPROACH", {"target_label": "cup"}),
+        scene,
+        robot_state={"battery": "unknown"},
+    )
+    assert result.decision.command == "STOP"
+
+
+def test_battery_above_100_percent_fails_safe():
+    scene = _scene(battery=150)
+    result = apply_safety_policy(
+        _decision("APPROACH", {"target_label": "cup"}),
+        scene,
+        robot_state={"battery": 150},
+    )
+    assert result.decision.command == "STOP"
