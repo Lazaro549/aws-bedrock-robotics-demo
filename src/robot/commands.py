@@ -14,7 +14,7 @@ ALLOWED_COMMANDS = {"MOVE_TO", "APPROACH", "PICK", "PLACE", "INSPECT", "STOP", "
 
 class MoveToParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    x: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    x: float = Field(ge=0.0, le=1.0, allow_inf_nan=False, strict=True)
     y: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
 
 
@@ -25,7 +25,7 @@ class TargetParams(BaseModel):
 
 class WaitParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    seconds: float = Field(default=1.0, gt=0.0, le=10.0, allow_inf_nan=False)
+    seconds: float = Field(default=1.0, gt=0.0, le=10.0, allow_inf_nan=False, strict=True)
 
 
 class EmptyParams(BaseModel):
@@ -46,7 +46,7 @@ PARAM_SCHEMAS = {
 class RobotCommand(BaseModel):
     name: str
     params: dict[str, Any] = Field(default_factory=dict)
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0, allow_inf_nan=False)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, allow_inf_nan=False, strict=True)
     reasoning: str = ""
 
 
