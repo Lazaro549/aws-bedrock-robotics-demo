@@ -32,7 +32,8 @@ class RobotSimulator:
 
     def _result(self, success: bool, message: str, start: float) -> ExecutionResult:
         duration = time.perf_counter() - start
-        self.state["status"] = "IDLE" if success else "ERROR"
+        if self.state["status"] == "EXECUTING":
+            self.state["status"] = "IDLE" if success else "ERROR"
         return ExecutionResult(
             success=success,
             message=message,
