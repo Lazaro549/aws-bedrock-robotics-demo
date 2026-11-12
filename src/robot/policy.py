@@ -11,6 +11,7 @@ Rules (safe by default):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 
 from src.reasoning.bedrock_client import RobotDecision
@@ -104,10 +105,16 @@ def _battery_level(robot_state: dict[str, Any], scene: SceneContext) -> float | 
             try:
                 val = float(raw)
             except (TypeError, ValueError):
-                continue
+                return 0.0  # Unknown battery telemetry must fail safe.
+            if not math.isfinite(val):
+                return 0.0
             if val > 1.0:
+                if val > 100.0:
+                    return 0.0
                 val = val / 100.0
-            return _clamp(val, 0.0, 1.0)
+            if val < 0.0:
+                return 0.0
+            return val
     return None
 
 
@@ -191,13 +198,17 @@ def apply_safety_policy(
     # 5) Workspace clamp for MOVE_TO
     if command == "MOVE_TO":
         try:
-            x = float(params.get("x", 0.5))
-            y = float(params.get("y", 0.5))
-        except (TypeError, ValueError):
+            if "x" not in params or "y" not in params:
+                raise ValueError("missing coordinate")
+            x = float(params["x"])
+            y = float(params["y"])
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise ValueError("non-finite coordinate")
+        except (TypeError, ValueError, OverflowError):
             rules.append("invalid_move_to_coords→STOP")
             command = "STOP"
             params = {}
-            reasoning = f"[policy] Invalid MOVE_TO coordinates. Forcing STOP. {reasoning}"
+            reasoning = f"[policy] Invalid or missing MOVE_TO coordinates. Forcing STOP. {reasoning}"
         else:
             cx = _clamp(x, cfg.workspace_min, cfg.workspace_max)
             cy = _clamp(y, cfg.workspace_min, cfg.workspace_max)
