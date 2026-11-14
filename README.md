@@ -114,7 +114,14 @@ infra/             # minimal SAM skeleton
 
 - [robot-vision-dashboard](https://github.com/Lazaro549/robot-vision-dashboard)
 - [Portfolio](https://lazaro549.github.io/Portfolio/)
+  
+## 💸 Donations
 
+- 🇦🇷 ARS (Argentina)
+  Alias: `lazaro.503.alaba.mp`
+- 🌎 USD (local transfers within Argentina only)
+  Alias: `ahogada.duras.foca`
+  
 ## License
 
 MIT © Lázaro Gómez Vitolo
